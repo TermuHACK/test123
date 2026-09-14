@@ -1,0 +1,13 @@
+gomni
+gomni-termux-*
+synergy
+synergy-termux-*
+synergy-harness
+synergy-harness-termux-*
+*.zip
+.gomni/
+tui.go.old
+tuiview.go.old
+*.py
+*.patch
+upd.patch
