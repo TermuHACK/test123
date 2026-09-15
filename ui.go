@@ -106,16 +106,18 @@ type tline struct {
 }
 
 type chatSession struct {
-	id      int
-	name    string
-	workdir string
-	agent   *Agent
-	cancel  context.CancelFunc
-	running bool
-	title   string
-	mu      sync.Mutex
-	lines   []tline
-	queue   []string
+	id       int
+	name     string
+	workdir  string
+	agent    *Agent
+	cancel   context.CancelFunc
+	running  bool
+	pinned   bool
+	title    string
+	titleGen bool // заголовок уже сгенерирован
+	mu       sync.Mutex
+	lines    []tline
+	queue    []string
 }
 
 // ---------- модель ----------
@@ -230,9 +232,11 @@ func newTuiModel(cfg Config, llm *LLMClient, workdir string, plugins []*Plugin) 
 		m.failoverOn = true // дефолт: включён
 	}
 	// восстановление последнего выбранного провайдера/модели из config.json
-	if cfg.Provider != "" {
-		if p := ProviderByName(cfg.Provider); p != nil {
+	// (со миграцией старых имён: «OpenCode Zen Free» → «OpenCode Zen no-key» и т.д.)
+	if name := migrateProviderName(cfg.Provider); name != "" {
+		if p := ProviderByName(name); p != nil {
 			m.provider = p.Name
+			m.cfg.Provider = p.Name // перезаписываем мигрированным именем
 			m.llm.BaseURL = strings.TrimRight(p.Base, "/")
 			if p.KeyFrom != nil {
 				m.llm.APIKey = p.KeyFrom(m.cfg)
@@ -349,6 +353,42 @@ func (m *tuiModel) launchAgent(sid int, prompt string) tea.Cmd {
 	}
 }
 
+// titleGenMsg — результат генерации заголовка чата.
+type titleGenMsg struct {
+	sid   int
+	title string
+}
+
+// genTitleCmd — просит модель (cfg.TitleModel, иначе текущую) дать чату короткое имя.
+func (m *tuiModel) genTitleCmd(sid int, firstUser string) tea.Cmd {
+	llm := *m.llm // копия клиента: меняем только модель, стрим не трогаем
+	if tm := strings.TrimSpace(m.cfg.TitleModel); tm != "" {
+		llm.Model = tm
+	}
+	prompt := firstUser
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		resp, err := llm.Complete(ctx, ChatRequest{
+			Model: llm.Model,
+			Messages: []Message{
+				{Role: "system", Content: "Придумай очень короткое название чата (2-5 слов) по первому сообщению пользователя. Ответь ТОЛЬКО названием, без кавычек и пояснений."},
+				{Role: "user", Content: prompt},
+			},
+			MaxTokens: 24,
+		})
+		if err != nil || resp == nil || len(resp.Choices) == 0 {
+			return titleGenMsg{sid: sid}
+		}
+		t := strings.TrimSpace(resp.Choices[0].Message.Content)
+		t = strings.Trim(t, "\"'«»")
+		if t == "" {
+			return titleGenMsg{sid: sid}
+		}
+		return titleGenMsg{sid: sid, title: trunc(t, 40)}
+	}
+}
+
 func renderEventText(ev AgentEvent) string {
 	switch ev.Kind {
 	case "tool_call":
@@ -407,6 +447,23 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if n := len(s.lines); n == 0 || s.lines[n-1].kind != "stream" {
 			s.lines = append(s.lines, tline{"answer", "(ответ выше)"})
 		}
+		needTitle := msg.err == nil && !s.titleGen
+		if needTitle {
+			s.titleGen = true
+		}
+		var firstUser string
+		if needTitle {
+			for _, l := range s.lines {
+				if l.kind == "user" {
+					firstUser = l.text
+					break
+				}
+			}
+		}
+		s.mu.Unlock()
+		if needTitle && firstUser != "" {
+			return m, m.genTitleCmd(msg.sid, firstUser)
+		}
 		var next string
 		if len(s.queue) > 0 && msg.err == nil {
 			next = s.queue[0]
@@ -445,6 +502,15 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.llm.Model = m.model
 			}
 			m.addToast("ok", fmt.Sprintf(T("models.count"), len(alive), len(m.models)))
+		}
+		return m, nil
+	case titleGenMsg:
+		if msg.title != "" && msg.sid >= 0 && msg.sid < len(m.sessions) {
+			s := m.sessions[msg.sid]
+			s.title = msg.title
+			if s.agent != nil {
+				saveNamedSession(s.agent, s.name)
+			}
 		}
 		return m, nil
 	case toastMsg:
@@ -852,13 +918,6 @@ func (m *tuiModel) completeTab() {
 				cands = append(cands, "/provider "+p.Name)
 			}
 		}
-	} else if fields[0] == "/model" {
-		tail := fields[len(fields)-1]
-		for _, mi := range m.models {
-			if strings.Contains(mi.ID, tail) {
-				cands = append(cands, "/model "+mi.ID)
-			}
-		}
 	}
 	if len(cands) == 0 {
 		m.compl.visible = false
@@ -1065,16 +1124,23 @@ func (m *tuiModel) stepSidebarAnim() tea.Cmd {
 }
 
 // sidebarWidth — текущая (анимированная) ширина панели.
+// Держим ≥ 36: должны влезать кнопки «＋ новый ✕ удалить ◆ закреп» на полном кадре анимации.
 func (m tuiModel) sidebarWidth() int {
-	w := 4 + m.sidebarAnim*3 + m.sidebarAnim/4
-	if w > 30 {
-		w = 30
+	w := 4 + m.sidebarAnim*4
+	if w > 38 {
+		w = 38
 	}
 	return w
 }
 
 func (m tuiModel) sidebarVisible() bool {
-	return (m.sidebar || m.sidebarAnim > 0) && m.width >= 96
+	return (m.sidebar || m.sidebarAnim > 0) && m.width >= 76
+}
+
+// sidebarOverlay — при ширине < 96 панель рисуется поверх контента (не сужая его),
+// иначе на узком терминале основная колонка схлопывается до нечитаемости.
+func (m tuiModel) sidebarOverlay() bool {
+	return m.sidebarVisible() && m.width < 96
 }
 
 // ---------- тосты ----------
@@ -1112,6 +1178,44 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.settings = !m.settings
 		return m, nil
 	}
+	if m.bz.hit("btn_quit", msg) {
+		saveInputHistory(m.hist)
+		m.saveSettings()
+		return m, tea.Quit
+	}
+	if m.bz.hit("chat_new", msg) {
+		m.addSession(m.workdir)
+		m.cur = len(m.sessions) - 1
+		m.refreshTranscript()
+		return m, nil
+	}
+	if m.bz.hit("chat_del", msg) {
+		m.closeCurrent()
+		m.refreshTranscript()
+		return m, nil
+	}
+	if m.bz.hit("chat_pin", msg) {
+		s := m.sessions[m.cur]
+		s.pinned = !s.pinned
+		if s.pinned {
+			m.addToast("ok", T("toast.pinned")+" "+s.name)
+		} else {
+			m.addToast("info", T("toast.unpinned")+" "+s.name)
+		}
+		return m, nil
+	}
+	for _, n := range listSavedSessions() {
+		if m.bz.hit("saved:"+n, msg) {
+			idx := m.addSession(m.workdir)
+			s := m.sessions[idx]
+			s.name = n
+			loadNamedSession(s.agent, n)
+			m.cur = idx
+			m.refreshTranscript()
+			m.addToast("ok", T("chat.loaded")+" "+n)
+			return m, nil
+		}
+	}
 	for i := range m.sessions {
 		if m.bz.hit(fmt.Sprintf("sess:%d", i), msg) {
 			if i != m.cur {
@@ -1121,17 +1225,15 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if m.bz.hit("pick", msg) {
-		// клик по пункту пикера — вычисляем строку из Y
-		if m.picker {
-			y := msg.Y - m.pickY0
-			if y >= 0 && y < len(m.pickerItems) {
-				m.pickerSel = y
+	// клик по пункту пикера — зоны создаются в renderPicker как pick:N
+	if m.picker {
+		for i := range m.pickerItems {
+			if m.bz.hit(fmt.Sprintf("pick:%d", i), msg) {
+				m.pickerSel = i
 				_, c := m.applyPicker()
 				return m, c
 			}
 		}
-		return m, nil
 	}
 	return m, nil
 }
@@ -1254,6 +1356,23 @@ func (m *tuiModel) dispatchCommand(line string) tea.Cmd {
 		} else {
 			m.openPicker("history", "История чатов", names)
 		}
+	case "/titlemodel":
+		if len(fields) < 2 {
+			cur := m.cfg.TitleModel
+			if cur == "" {
+				cur = m.model + " (текущая)"
+			}
+			m.addToast("info", "модель заголовков: "+cur+" — сменить: /titlemodel <id>, сброс: /titlemodel auto")
+			break
+		}
+		if fields[1] == "auto" {
+			m.cfg.TitleModel = ""
+			m.addToast("ok", "заголовки генерит текущая модель")
+		} else {
+			m.cfg.TitleModel = fields[1]
+			m.addToast("ok", "модель заголовков: "+fields[1])
+		}
+		m.saveSettings()
 	case "/lang":
 		if uiLang == "ru" {
 			setUILang("en")
@@ -1292,9 +1411,21 @@ func (m *tuiModel) dispatchCommand(line string) tea.Cmd {
 		m.openPicker("help", "Команды Synergy Harness", helpCommands)
 	case "/models":
 		if len(fields) > 1 && fields[1] == "refresh" {
+			InvalidateModelsCache()
 			return m.fetchCmd()
 		}
 		m.openModelsPicker()
+	case "/model":
+		if len(fields) < 2 {
+			m.addToast("err", "использование: /model <id> — своя модель, например /model gpt-5.5")
+			break
+		}
+		id := fields[1]
+		m.model = id
+		m.llm.Model = id
+		m.cfg.Model = id
+		m.saveSettings()
+		m.addToast("ok", T("model.set")+" "+id)
 	case "/providers", "/provider":
 		if cmd == "/provider" && len(fields) > 1 {
 			name := strings.Join(fields[1:], " ")

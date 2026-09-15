@@ -5412,7 +5412,7 @@ type CompleteFunc func(buf []rune, cur int) []string
 var completer CompleteFunc
 
 var slashCommands = []string{
-	"/help", "/tools", "/model", "/models", "/provider", "/providers", "/session", "/sessions",
+	"/help", "/tools", "/models", "/provider", "/providers", "/session", "/sessions",
 	"/compact", "/plugins", "/plugins-reload", "/sandbox", "/workspace", "/reset",
 	"/memory", "/stats", "/telegram", "/quit",
 	"/chat", "/new", "/history", "/lang", "/steer", "/queue", "/settings",
@@ -6051,6 +6051,7 @@ type Config struct {
 	FailoverTarget  string `json:"failover_target,omitempty"`
 	SidebarSide     string `json:"sidebar_side,omitempty"` // "left" (по умолчанию) | "right"
 	Lang            string `json:"lang,omitempty"`         // "ru" (по умолчанию) | "en"
+	TitleModel      string `json:"title_model,omitempty"`  // модель для заголовков чатов; пусто = текущая
 }
 
 func getConfigDir() string {
@@ -6676,11 +6677,6 @@ var providerPresets = []providerPreset{
 	{"zen-free", "https://opencode.ai/zen/v1", "big-pickle", ""},
 	{"zen", "https://opencode.ai/zen/v1", "mimo-v2.5-free", "OPENAI_API_KEY"},
 	{"openrouter", "https://openrouter.ai/api/v1", "openai/gpt-4o-mini", "OPENROUTER_API_KEY"},
-}
-
-var zenModelIDs = []string{
-	"big-pickle", "mimo-v2.5-free", "ling-3.0-flash-fin-free",
-	"nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.3-contributor-free",
 }
 
 func findPreset(name string) *providerPreset {

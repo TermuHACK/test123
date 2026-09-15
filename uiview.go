@@ -19,12 +19,12 @@ import (
 func (m *tuiModel) layout() {
 	w := m.width - 2
 	mainW := w
-	if m.sidebarVisible() {
+	if m.sidebarVisible() && !m.sidebarOverlay() {
 		mainW = w - m.sidebarWidth()
 	}
 	s := m.sessions[m.cur]
 	s.mu.Lock()
-	empty := len(s.lines) == 0 || (len(s.lines) == 1 && s.lines[0].kind == "info")
+	empty := !s.running && (len(s.lines) == 0 || (len(s.lines) == 1 && s.lines[0].kind == "info"))
 	s.mu.Unlock()
 	if empty {
 		m.input.width = m.inputWidthFor(true) - 4
@@ -33,7 +33,9 @@ func (m *tuiModel) layout() {
 	}
 	m.vp.Width = mainW
 	edH := m.input.heightInLines()
-	m.vp.Height = m.height - 4 - edH
+	// высота вьюпорта = экран минус шапка(3) минус статус-бар(1) минус чип(1)
+	// минус рамка инпута(2) минус сам инпут минус строка тостов(1)
+	m.vp.Height = m.height - topBarRows - 5 - edH
 	if m.vp.Height < 3 {
 		m.vp.Height = 3
 	}
@@ -42,7 +44,7 @@ func (m *tuiModel) layout() {
 
 func (m tuiModel) mainColWidth() int {
 	w := m.width - 2
-	if m.sidebarVisible() {
+	if m.sidebarVisible() && !m.sidebarOverlay() {
 		w -= m.sidebarWidth()
 	}
 	return w
@@ -56,6 +58,9 @@ func (m tuiModel) inputWidthFor(empty bool) int {
 	}
 	return w
 }
+
+// topBarRows — реальная высота шапки: пустая строка-отступ + кнопки + разделитель.
+const topBarRows = 3
 
 // ---------- корневой View ----------
 func (m tuiModel) View() string {
@@ -109,12 +114,13 @@ func (m tuiModel) renderTop() string {
 	side := tile("☰", m.sidebar)
 	brand := lipgloss.NewStyle().Bold(true).Foreground(clAccent).Render(" SYNERGY ") +
 		lipgloss.NewStyle().Foreground(clMuted).Render(providerLabel(m.provider))
-	newBtn := tile("+", false)
+	newBtn := tile("＋", false)
 	modelsBtn := tile(shortModel(m.model)+" ◎"+strings.Repeat("●", m.reasoning+1), false)
 	cfgBtn := tile("⚙", m.settings)
+	quitBtn := tile("✕", false)
 
-	left := lipgloss.JoinHorizontal(lipgloss.Top, side, brand, newBtn)
-	right := lipgloss.JoinHorizontal(lipgloss.Top, modelsBtn, cfgBtn)
+	left := lipgloss.JoinHorizontal(lipgloss.Top, side, " ", brand, " ", newBtn)
+	right := lipgloss.JoinHorizontal(lipgloss.Top, modelsBtn, " ", cfgBtn, " ", quitBtn)
 
 	// join вместо пробельной арифметики: кнопки не съезжают ни при какой ширине
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
@@ -123,17 +129,21 @@ func (m tuiModel) renderTop() string {
 	}
 	row := lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), right)
 
-	// зоны мыши — по видимой ширине сегментов (border=false сверху, значит y=0 — единственная строка)
+	// зоны мыши — y=1, потому что строка 0 — отступ от верхнего края
 	z := m.bz
 	x := 0
-	z.set("btn_side", x, 0, x+lipgloss.Width(side)-1, 1)
-	x += lipgloss.Width(side) + lipgloss.Width(brand)
-	z.set("btn_new", x, 0, x+lipgloss.Width(newBtn)-1, 1)
+	z.set("btn_side", x, 1, x+lipgloss.Width(side)-1, 1)
+	x += lipgloss.Width(side) + 1 + lipgloss.Width(brand) + 1
+	z.set("btn_new", x, 1, x+lipgloss.Width(newBtn)-1, 1)
 	rx := m.width - lipgloss.Width(right)
-	z.set("btn_models", rx, 0, rx+lipgloss.Width(modelsBtn)-1, 1)
-	z.set("btn_cfg", rx+lipgloss.Width(modelsBtn), 0, rx+lipgloss.Width(right)-1, 1)
+	z.set("btn_models", rx, 1, rx+lipgloss.Width(modelsBtn)-1, 1)
+	x2 := rx + lipgloss.Width(modelsBtn) + 1
+	z.set("btn_cfg", x2, 1, x2+lipgloss.Width(cfgBtn)-1, 1)
+	x2 += lipgloss.Width(cfgBtn) + 1
+	z.set("btn_quit", x2, 1, x2+lipgloss.Width(quitBtn)-1, 1)
 
-	return row + "\n" + lipgloss.NewStyle().Foreground(clBorder).Render(strings.Repeat("─", m.width))
+	// отступ от верхнего края: пустая строка, потом кнопки, потом разделитель
+	return "\n" + row + "\n" + lipgloss.NewStyle().Foreground(clBorder).Render(strings.Repeat("─", m.width))
 }
 
 // ---------- тело ----------
@@ -147,6 +157,24 @@ func (m tuiModel) renderBody() string {
 	mainCol := m.renderMainCol()
 	if m.sidebarVisible() {
 		side := m.renderSidebar()
+		if m.sidebarOverlay() {
+			// overlay: панель поверх контента — заменяем первые/последние sw колонок
+			mainLines := strings.Split(mainCol, "\n")
+			sideLines := strings.Split(side, "\n")
+			sw := m.sidebarWidth()
+			for i, sl := range sideLines {
+				if i >= len(mainLines) {
+					break
+				}
+				ml := mainLines[i]
+				if m.sidebarRight {
+					mainLines[i] = truncVisible(ml, m.width-2-sw) + sl
+				} else {
+					mainLines[i] = sl + dropVisibleLeft(ml, sw)
+				}
+			}
+			return strings.Join(mainLines, "\n")
+		}
 		if m.sidebarRight {
 			return lipgloss.JoinHorizontal(lipgloss.Top, mainCol, side)
 		}
@@ -158,7 +186,7 @@ func (m tuiModel) renderBody() string {
 func (m tuiModel) renderMainCol() string {
 	s := m.sessions[m.cur]
 	s.mu.Lock()
-	empty := len(s.lines) == 0 || (len(s.lines) == 1 && s.lines[0].kind == "info")
+	empty := !s.running && (len(s.lines) == 0 || (len(s.lines) == 1 && s.lines[0].kind == "info"))
 	s.mu.Unlock()
 
 	if empty {
@@ -227,9 +255,13 @@ func (m tuiModel) renderGreeting() string {
 	)
 	inner := lipgloss.NewStyle().Width(m.mainColWidth() - 4).Align(lipgloss.Center).
 		Render(strings.Join(rows, "\n"))
+	h := m.height - topBarRows - 7
+	if h < 5 {
+		h = 5
+	}
 	return lipgloss.NewStyle().
 		Width(m.mainColWidth()).
-		Height(m.height-10).
+		Height(h).
 		Align(lipgloss.Center, lipgloss.Center).
 		Render(inner)
 }
@@ -395,7 +427,56 @@ func (m tuiModel) renderSidebar() string {
 	y := 2
 
 	var b strings.Builder
+	// тело начинается с y=topBarRows (отступ + кнопки + разделитель), +1 за рамку панели
+	y = topBarRows + 1
+	pinCol := clYellow
+
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(clBlue).Render(T("chats") + "\n"))
+	y++
+
+	renderItem := func(i int) {
+		s := m.sessions[i]
+		mark := "  "
+		if i == m.cur {
+			mark = "▶"
+		}
+		pin := " "
+		if s.pinned {
+			pin = lipgloss.NewStyle().Foreground(pinCol).Render("◆")
+		}
+		status := ""
+		if s.running {
+			status = " …"
+		}
+		label := fmt.Sprintf("%s %s%s%s", mark, s.name, status, " "+pin)
+		var item string
+		if i == m.cur {
+			item = lipgloss.NewStyle().Padding(0, 1).Foreground(clBG).Background(clAccent).Render(label)
+		} else {
+			item = lipgloss.NewStyle().Padding(0, 1).Foreground(clFG).Render(label)
+		}
+		m.bz.set(fmt.Sprintf("sess:%d", i), sx0, y, sx1, y)
+		b.WriteString(item + "\n")
+		y++
+	}
+
+	// закреплённые — отдельным блоком сверху
+	var pins []int
+	for i, s := range m.sessions {
+		if s.pinned {
+			pins = append(pins, i)
+		}
+	}
+	if len(pins) > 0 {
+		b.WriteString(lipgloss.NewStyle().Foreground(pinCol).Render("  "+T("chats.pinned")) + "\n")
+		y++
+		for _, i := range pins {
+			renderItem(i)
+		}
+		b.WriteString("\n")
+		y++
+	}
+
 	for _, d := range dirs {
 		short := d
 		if short == "" {
@@ -404,32 +485,59 @@ func (m tuiModel) renderSidebar() string {
 		b.WriteString(lipgloss.NewStyle().Foreground(clMuted).Render("  📁 "+trunc(filepath.Base(short), 24)) + "\n")
 		y++
 		for _, i := range grouped[d] {
-			s := m.sessions[i]
-			mark := "  "
-			if i == m.cur {
-				mark = "▶"
+			if m.sessions[i].pinned {
+				continue // закреплённые уже отрисованы сверху
 			}
-			status := ""
-			if s.running {
-				status = " …"
+			renderItem(i)
+		}
+	}
+
+	// сохранённые на диске чаты, которых нет среди живых сессий
+	liveNames := map[string]bool{}
+	for _, s := range m.sessions {
+		liveNames[s.name] = true
+	}
+	var saved []string
+	for _, n := range listSavedSessions() {
+		if !liveNames[n] {
+			saved = append(saved, n)
+		}
+	}
+	if len(saved) > 0 {
+		b.WriteString("\n" + lipgloss.NewStyle().Foreground(clMuted).Render("  "+T("chats.saved")) + "\n")
+		y += 2
+		for i, n := range saved {
+			if i >= 6 {
+				b.WriteString(lipgloss.NewStyle().Foreground(clMuted).Render(fmt.Sprintf("    +%d", len(saved)-6)) + "\n")
+				y++
+				break
 			}
-			label := fmt.Sprintf("%s %s%s", mark, s.name, status)
-			var item string
-			if i == m.cur {
-				item = lipgloss.NewStyle().Padding(0, 1).Foreground(clBG).Background(clAccent).Render(label)
-			} else {
-				item = lipgloss.NewStyle().Padding(0, 1).Foreground(clFG).Render(label)
-			}
-			m.bz.set(fmt.Sprintf("sess:%d", i), sx0, y, sx1, y)
+			item := lipgloss.NewStyle().Padding(0, 1).Foreground(clMuted).Render("◌ " + trunc(n, 24))
+			m.bz.set("saved:"+n, sx0, y, sx1, y)
 			b.WriteString(item + "\n")
 			y++
 		}
 	}
+
+	// кнопки действий: создать / удалить / закрепить (по текущему чату)
+	b.WriteString("\n")
+	y++
+	btnNew := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(clGreen).Foreground(clGreen).Padding(0, 1).Render(T("chats.new"))
+	btnDel := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(clRed).Foreground(clRed).Padding(0, 1).Render(T("chats.del"))
+	btnPin := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(pinCol).Foreground(pinCol).Padding(0, 1).Render(T("chats.pin"))
+	bx := sx0 + 1
+	m.bz.set("chat_new", bx, y, bx+lipgloss.Width(btnNew)-1, y+2)
+	bx += lipgloss.Width(btnNew) + 1
+	m.bz.set("chat_del", bx, y, bx+lipgloss.Width(btnDel)-1, y+2)
+	bx += lipgloss.Width(btnDel) + 1
+	m.bz.set("chat_pin", bx, y, bx+lipgloss.Width(btnPin)-1, y+2)
+	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, btnNew, " ", btnDel, " ", btnPin) + "\n")
+
 	b.WriteString("\n" + lipgloss.NewStyle().Foreground(clMuted).Render(T("chats.hint")+"\n"))
 	return lipgloss.NewStyle().
 		Width(w).
 		MaxWidth(w).
-		Height(m.height - 3).
+		Height(m.height - topBarRows).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(clBorder).
 		Render(b.String())
@@ -441,7 +549,7 @@ func (m tuiModel) renderPicker() string {
 	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(clBlue).Render("  "+m.pickerTitle))
 	lines = append(lines, "")
 	start := 0
-	maxShow := m.height - 8
+	maxShow := m.height - topBarRows - 8
 	if maxShow < 3 {
 		maxShow = 3
 	}
@@ -468,14 +576,34 @@ func (m tuiModel) renderPicker() string {
 	}
 	lines = append(lines, "")
 	lines = append(lines, lipgloss.NewStyle().Foreground(clMuted).Render("  "+T("picker.keys")))
+	// зоны клика по строкам пикера: тело стартует с topBarRows; дальше центровка,
+	// рамка(1) + паддинг(0) + заголовок(2 строки: title + пустая)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(clCyan).
 		Padding(0, 2).
 		Render(strings.Join(lines, "\n"))
+	availH := m.height - topBarRows - 1
+	boxH := strings.Count(box, "\n") + 1
+	if boxH >= availH {
+		// не влезает — прижимаем к верху, центрирование бы обрезало заголовок
+		m.pickY0 = topBarRows + 1 + 2
+		for i := 0; i < end-start; i++ {
+			m.bz.set(fmt.Sprintf("pick:%d", start+i), 0, m.pickY0+i, m.width-1, m.pickY0+i)
+		}
+		return lipgloss.NewStyle().
+			Width(m.width-2).
+			Align(lipgloss.Center, lipgloss.Top).
+			Render(box)
+	}
+	boxY := topBarRows + (availH-boxH)/2
+	m.pickY0 = boxY + 1 + 2
+	for i := 0; i < end-start; i++ {
+		m.bz.set(fmt.Sprintf("pick:%d", start+i), 0, m.pickY0+i, m.width-1, m.pickY0+i)
+	}
 	return lipgloss.NewStyle().
 		Width(m.width-2).
-		Height(m.height-3).
+		Height(availH).
 		Align(lipgloss.Center, lipgloss.Center).
 		Render(box)
 }
@@ -513,6 +641,7 @@ func (m tuiModel) renderSettings() string {
 		T("settings.failover") + lipgloss.NewStyle().Foreground(boolColor(m.failoverOn)).Render(onOff(m.failoverOn)) + lipgloss.NewStyle().Foreground(clMuted).Render(" → "+orDefault(m.failoverTarget, "auto")+"  (F)"),
 		T("settings.sidebar") + lipgloss.NewStyle().Foreground(clCyan).Render(m.sidebarSideName()) + lipgloss.NewStyle().Foreground(clMuted).Render("  (B)"),
 		T("settings.enter") + lipgloss.NewStyle().Foreground(clCyan).Render(m.enterModeName()) + lipgloss.NewStyle().Foreground(clMuted).Render("  (E)"),
+		T("settings.titlemodel") + lipgloss.NewStyle().Foreground(clCyan).Render(m.titleModelLabel()) + lipgloss.NewStyle().Foreground(clMuted).Render("  (/titlemodel)"),
 		"",
 		T("settings.notify") + lipgloss.NewStyle().Foreground(clMuted).Render(notifyInfo()),
 		T("settings.workdir") + lipgloss.NewStyle().Foreground(clMuted).Render(m.sessions[m.cur].workdir),
@@ -551,11 +680,27 @@ func (m tuiModel) renderSettings() string {
 		BorderForeground(clAccent).
 		Padding(1, 3).
 		Render(strings.Join(lines, "\n"))
+	availH := m.height - topBarRows - 1
+	if strings.Count(box, "\n")+1 >= availH {
+		// высокий бокс — прижимаем к верху, иначе центрирование обрежет шапку
+		return lipgloss.NewStyle().
+			Width(m.width-2).
+			Align(lipgloss.Center, lipgloss.Top).
+			Render(box)
+	}
 	return lipgloss.NewStyle().
 		Width(m.width-2).
-		Height(m.height-3).
+		Height(availH).
 		Align(lipgloss.Center, lipgloss.Center).
 		Render(box)
+}
+
+// titleModelLabel — какая модель генерит заголовки чатов (по умолчанию текущая).
+func (m tuiModel) titleModelLabel() string {
+	if strings.TrimSpace(m.cfg.TitleModel) != "" {
+		return m.cfg.TitleModel
+	}
+	return T("titlemodel.current")
 }
 
 func (m tuiModel) enterModeName() string {
@@ -708,4 +853,77 @@ func (m tuiModel) Init() tea.Cmd {
 		m.fetchCmd(),
 		tea.Tick(3*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) }),
 	)
+}
+
+// truncVisible обрезает строку с ANSI-кодами до n видимых колонок.
+func truncVisible(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	vis := 0
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			b.WriteRune(r)
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEsc = true
+			b.WriteRune(r)
+			continue
+		}
+		if vis >= n {
+			break
+		}
+		b.WriteRune(r)
+		vis++
+	}
+	if inEsc {
+		return b.String()
+	}
+	return b.String() + "\x1b[0m"
+}
+
+// dropVisibleLeft отбрасывает первые n видимых колонок ANSI-строки.
+func dropVisibleLeft(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	var b strings.Builder
+	vis := 0
+	inEsc := false
+	dropped := false
+	for _, r := range s {
+		if inEsc {
+			if dropped {
+				b.WriteRune(r)
+			}
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEsc = true
+			if dropped {
+				b.WriteRune(r)
+			}
+			continue
+		}
+		if !dropped {
+			vis++
+			if vis > n {
+				dropped = true
+				b.WriteString("\x1b[0m")
+				b.WriteRune(r)
+			}
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

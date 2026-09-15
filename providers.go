@@ -43,11 +43,22 @@ type ProviderDef struct {
 var providersMu sync.RWMutex
 
 // builtinProviders — встроенный список; кастомные добавляются из конфига.
+// OpenRouter Free удалён — достаточно одного OpenRouter (ключ обязателен).
 var builtinProviders = []ProviderDef{
-	{Name: "OpenCode Zen Free", Base: "https://opencode.ai/zen/v1", Free: true},
+	{Name: "OpenCode Zen no-key", Base: "https://opencode.ai/zen/v1", Free: true},
 	{Name: "OpenCode Zen", Base: "https://opencode.ai/zen/v1", KeyFrom: func(c Config) string { return providerKey(c, "OpenCode Zen") }},
-	{Name: "OpenRouter Free", Base: "https://openrouter.ai/api/v1", Free: true, KeyFrom: func(c Config) string { return providerKey(c, "OpenRouter") }},
 	{Name: "OpenRouter", Base: "https://openrouter.ai/api/v1", KeyFrom: func(c Config) string { return providerKey(c, "OpenRouter") }},
+}
+
+// migrateProviderName — старые имена из config.json → актуальные (чтобы выбор не терялся).
+func migrateProviderName(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "opencode zen free", "zen free", "zen-free", "zenfree":
+		return "OpenCode Zen no-key"
+	case "openrouter free":
+		return "OpenRouter"
+	}
+	return name
 }
 
 func providerKey(c Config, name string) string {
@@ -80,6 +91,7 @@ func Providers() []ProviderDef {
 func ProviderByName(name string) *ProviderDef {
 	providersMu.RLock()
 	defer providersMu.RUnlock()
+	name = migrateProviderName(name)
 	for i := range providerDefsV2 {
 		if strings.EqualFold(providerDefsV2[i].Name, name) {
 			return &providerDefsV2[i]
@@ -150,12 +162,21 @@ func FetchModels(p *ProviderDef, cfg Config, probe bool) ([]ModelInfo, error) {
 			out = append(out, ModelInfo{ID: id, Alive: true})
 		}
 	} else {
-		// Пробинг бесплатных моделей параллельно (как models.dev статус у opencode,
-		// только живой): tiny-запрос max_tokens=1, таймаут 20с.
+		// Zen no-key: пробуем только free-модели + big-pickle (реально работают без ключа);
+		// платные остаются в списке как Alive (вдруг пользователь введёт ключ позже).
+		isFree := func(id string) bool {
+			low := strings.ToLower(id)
+			return strings.Contains(low, "free") || low == "big-pickle"
+		}
+		// Пробинг бесплатных моделей параллельно: tiny-запрос max_tokens=1, таймаут 20с.
 		var wg sync.WaitGroup
 		res := make([]ModelInfo, len(ids))
 		sem := make(chan struct{}, 6)
 		for i, id := range ids {
+			if !isFree(id) {
+				res[i] = ModelInfo{ID: id, Alive: true}
+				continue
+			}
 			wg.Add(1)
 			go func(i int, id string) {
 				defer wg.Done()
@@ -165,11 +186,17 @@ func FetchModels(p *ProviderDef, cfg Config, probe bool) ([]ModelInfo, error) {
 			}(i, id)
 		}
 		wg.Wait()
+		// порядок сохраняем как в /models (free сверху), лишь dead free уходят вниз
 		for _, mi := range res {
 			out = append(out, mi)
 		}
-		// живые вперёд
-		sort.SliceStable(out, func(i, j int) bool { return out[i].Alive && !out[j].Alive })
+		sort.SliceStable(out, func(i, j int) bool {
+			fi, fj := isFree(out[i].ID), isFree(out[j].ID)
+			if fi && fj && out[i].Alive != out[j].Alive {
+				return out[i].Alive // живые free выше мёртвых free
+			}
+			return false
+		})
 	}
 	modelsCacheMu.Lock()
 	modelsCache[key] = out
@@ -221,16 +248,6 @@ func fetchModelIDs(p *ProviderDef, cfg Config) ([]string, error) {
 		if d.ID == "" || seen[d.ID] {
 			continue
 		}
-		if p.Free {
-			low := strings.ToLower(d.ID)
-			if strings.Contains(base, "openrouter") {
-				if !strings.HasSuffix(low, ":free") {
-					continue
-				}
-			} else if !strings.Contains(low, "free") {
-				continue
-			}
-		}
 		seen[d.ID] = true
 		ids = append(ids, d.ID)
 	}
@@ -238,6 +255,27 @@ func fetchModelIDs(p *ProviderDef, cfg Config) ([]string, error) {
 		return nil, fmt.Errorf("провайдер %s вернул пустой список", p.Name)
 	}
 	sort.Strings(ids)
+	if strings.Contains(base, "opencode.ai") {
+		// Zen no-key: сортировка — сначала все free + big-pickle (они реально работают без ключа),
+		// потом остальные. Пользователь может добавить свою модель через /model <id>.
+		isFree := func(id string) bool {
+			low := strings.ToLower(id)
+			return strings.Contains(low, "free") || low == "big-pickle"
+		}
+		sort.SliceStable(ids, func(i, j int) bool {
+			fi, fj := isFree(ids[i]), isFree(ids[j])
+			if fi != fj {
+				return fi
+			}
+			if ids[i] == "big-pickle" {
+				return true
+			}
+			if ids[j] == "big-pickle" {
+				return false
+			}
+			return ids[i] < ids[j]
+		})
+	}
 	return ids, nil
 }
 
