@@ -315,8 +315,14 @@ func (m *tuiModel) fetchCmd() tea.Cmd {
 
 // ---------- запуск агента ----------
 func (m *tuiModel) launchAgent(sid int, prompt string) tea.Cmd {
+	// резолвим указатель на сессию НЕМЕДЛЕННО: если до исполнения команды
+	// чат закроют (closeCurrent режет слайс), индекс sid устареет и в горутине
+	// m.sessions[sid] паниковал бы index out of range — это и был краш из дампа.
+	if sid < 0 || sid >= len(m.sessions) {
+		return nil
+	}
+	s := m.sessions[sid]
 	return func() tea.Msg {
-		s := m.sessions[sid]
 		s.mu.Lock()
 		s.lines = append(s.lines, tline{"user", prompt})
 		s.title = trunc(prompt, 40)
@@ -421,6 +427,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sidebarAnimMsg:
 		return m, m.stepSidebarAnim()
 	case chatDeltaMsg:
+		if msg.sid < 0 || msg.sid >= len(m.sessions) {
+			return m, nil // сессия закрыта — поздняя дельта, игнорируем
+		}
 		s := m.sessions[msg.sid]
 		s.mu.Lock()
 		n := len(s.lines)
@@ -438,6 +447,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case chatDoneMsg:
+		if msg.sid < 0 || msg.sid >= len(m.sessions) {
+			return m, nil // сессия уже закрыта — позднее событие, игнорируем
+		}
 		s := m.sessions[msg.sid]
 		s.running = false
 		s.mu.Lock()

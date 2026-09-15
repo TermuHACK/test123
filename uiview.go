@@ -35,7 +35,7 @@ func (m *tuiModel) layout() {
 	edH := m.input.heightInLines()
 	// высота вьюпорта = экран минус шапка(3) минус статус-бар(1) минус чип(1)
 	// минус рамка инпута(2) минус сам инпут минус строка тостов(1)
-	m.vp.Height = m.height - topBarRows - 5 - edH
+	m.vp.Height = m.height - topBarRows - 4 - edH
 	if m.vp.Height < 3 {
 		m.vp.Height = 3
 	}
@@ -210,12 +210,18 @@ func (m tuiModel) renderMainCol() string {
 	}
 
 	area := m.vp.View()
+	// фиксированная ширина: без Width рамка росла вместе с вводимым текстом
 	inputBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(clBorder).
 		Padding(0, 1).
+		Width(m.mainColWidth() - 4).
+		MaxWidth(m.mainColWidth() - 4).
 		Render(m.input.View())
-	inputArea := lipgloss.JoinVertical(lipgloss.Top, m.renderStatusBar(), m.renderInputChip(), inputBox)
+	// под инпутом — одна компактная строка статуса (макет Frame 4: чистый текст + инпут внизу)
+	status := lipgloss.NewStyle().Foreground(clMuted).Render(
+		"  " + providerLabel(m.provider) + " | " + shortModel(m.model) + " | " + m.enterModeName())
+	inputArea := lipgloss.JoinVertical(lipgloss.Top, inputBox, status)
 	if m.compl.visible && len(m.compl.items) > 0 {
 		inputArea = lipgloss.JoinVertical(lipgloss.Top, m.renderCompletionPanel(0), inputArea)
 	}
