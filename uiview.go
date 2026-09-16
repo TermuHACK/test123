@@ -66,7 +66,10 @@ func (m tuiModel) inputWidthFor(empty bool) int {
 }
 
 // topBarRows — реальная высота шапки: пустая строка-отступ + кнопки + разделитель.
-const topBarRows = 3
+// renderTop: "\n"(1) + row(2) + "\n"(3) + separator(4) → 4 строки.
+// Несовпадение этой константы с реальной высотой сдвигает ВСЕ зоны кликов (пикер,
+// сайдбар) — клик по строке N попадал в N+1 («выбрал big-pickle, получил glm»).
+const topBarRows = 4
 
 // ---------- корневой View ----------
 func (m tuiModel) View() string {
