@@ -472,16 +472,15 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		s.mu.Unlock()
-		if needTitle && firstUser != "" {
-			return m, m.genTitleCmd(msg.sid, firstUser)
-		}
 		var next string
 		if len(s.queue) > 0 && msg.err == nil {
 			next = s.queue[0]
 			s.queue = s.queue[1:]
 		}
 		s.mu.Unlock()
+		if needTitle && firstUser != "" {
+			return m, m.genTitleCmd(msg.sid, firstUser)
+		}
 		if msg.sid == m.cur {
 			m.refreshTranscript()
 		}
@@ -899,11 +898,23 @@ func (m *tuiModel) smartEnterShouldSubmit() bool {
 }
 
 // ---------- автодополнение ----------
+// liveComplete — НЕ-интрузивное: только обновляет список подсказок при вводе.
+// Никогда не вставляет текст и не исполняет команды само (было: completeTab
+// автовставлял единственного кандидата → «команды сами набираются»).
 func (m *tuiModel) liveComplete() {
-	// «по ходу набора»: если поле начинается с / — обновляем кандидатов сразу
 	v := m.input.Value()
-	if strings.HasPrefix(v, "/") && !strings.Contains(v, "\n") {
-		m.completeTab()
+	if strings.HasPrefix(v, "/") && !strings.Contains(v, "\n") && !strings.Contains(v, " ") {
+		var cands []string
+		for _, c := range slashCommands {
+			if strings.HasPrefix(c, v) {
+				cands = append(cands, c)
+			}
+		}
+		if len(cands) == 0 || (len(cands) == 1 && cands[0] == v) {
+			m.compl.visible = false
+			return
+		}
+		m.compl = completionState{visible: true, items: cands, sel: 0}
 	} else if m.compl.visible {
 		m.compl.visible = false
 	}
@@ -956,12 +967,8 @@ func (m *tuiModel) completeApply() {
 	m.compl.visible = false
 	m.input.Reset()
 	m.input.insertText(pick)
-	if strings.HasPrefix(pick, "/") && len(strings.Fields(pick)) == 1 {
-		if cmd := m.dispatchCommand(strings.TrimSpace(pick)); cmd != nil {
-			m.input.Reset()
-			m.pendingCmd = cmd
-		}
-	}
+	// НЕ исполняем: команда уходит только явной отправкой (Enter по правилам submit).
+	// Раньше тут был dispatchCommand → команда «сама набиралась и исполнялась».
 }
 
 // ---------- пикер ----------

@@ -26,16 +26,22 @@ func (m *tuiModel) layout() {
 	s.mu.Lock()
 	empty := !s.running && (len(s.lines) == 0 || (len(s.lines) == 1 && s.lines[0].kind == "info"))
 	s.mu.Unlock()
+	// ширина инпута фиксирована и НЕ зависит от текста — только от ширины колонки
 	if empty {
 		m.input.width = m.inputWidthFor(true) - 4
 	} else {
 		m.input.width = mainW - 6
 	}
 	m.vp.Width = mainW
+	// потолок высоты инпута: не более 40% высоты экрана, чтобы не съесть транскрипт
+	maxEd := (m.height - topBarRows - 4) * 2 / 5
+	if maxEd < 3 {
+		maxEd = 3
+	}
+	m.input.maxVisible = maxEd // внутри — вертикальный скролл (scrollOff в editor)
 	edH := m.input.heightInLines()
-	// высота вьюпорта = экран минус шапка(3) минус статус-бар(1) минус чип(1)
-	// минус рамка инпута(2) минус сам инпут минус строка тостов(1)
-	m.vp.Height = m.height - topBarRows - 4 - edH
+	// вьюпорт = экран минус шапка(3) минус инпут(рамка 2 + строки) минус статус-строка(1)
+	m.vp.Height = m.height - topBarRows - 3 - edH
 	if m.vp.Height < 3 {
 		m.vp.Height = 3
 	}
@@ -70,7 +76,18 @@ func (m tuiModel) View() string {
 	}
 	out := lipgloss.JoinVertical(lipgloss.Top, m.renderTop(), m.renderBody())
 	if toasts := m.renderToasts(); toasts != "" {
-		out += "\n" + toasts
+		// оверлей поверх нижних строк, НЕ добавление новых — иначе экран вырастает
+		// за m.height и терминал срезает шапку сверху
+		outLines := strings.Split(out, "\n")
+		tLines := strings.Split(toasts, "\n")
+		k := len(tLines)
+		if k > len(outLines) {
+			k = len(outLines)
+		}
+		for i := 0; i < k; i++ {
+			outLines[len(outLines)-k+i] = tLines[len(tLines)-k+i]
+		}
+		out = strings.Join(outLines, "\n")
 	}
 	return out
 }
@@ -210,6 +227,17 @@ func (m tuiModel) renderMainCol() string {
 	}
 
 	area := m.vp.View()
+	// прибиваем инпут к нижней строке: область транскрипта всегда ровно vp.Height —
+	// пустое место остаётся между текстом и инпутом, инпут никогда не «всплывает»
+	if m.vp.Height > 0 {
+		n := 0
+		if area != "" {
+			n = strings.Count(area, "\n") + 1
+		}
+		if pad := m.vp.Height - n; pad > 0 {
+			area += strings.Repeat("\n", pad)
+		}
+	}
 	// фиксированная ширина: без Width рамка росла вместе с вводимым текстом
 	inputBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -261,7 +289,8 @@ func (m tuiModel) renderGreeting() string {
 	)
 	inner := lipgloss.NewStyle().Width(m.mainColWidth() - 4).Align(lipgloss.Center).
 		Render(strings.Join(rows, "\n"))
-	h := m.height - topBarRows - 7
+	// высота приветствия = экран − шапка − бокс инпута(строки+рамка 2+паддинг 2) − пустая строка − чип
+	h := m.height - topBarRows - m.input.heightInLines() - 6
 	if h < 5 {
 		h = 5
 	}
