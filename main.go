@@ -6402,8 +6402,9 @@ func LookPathSafe(name string) (string, error) {
 }
 
 func main() {
-	var oneshot, noStream, telegramMode, netTestMode bool
+	var oneshot, noStream, telegramMode, netTestMode, serveMode bool
 	var promptArg, sessionArg string
+	port := 8787
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -6421,13 +6422,20 @@ func main() {
 			netTestMode = true
 		case "-telegram", "-tg":
 			telegramMode = true
+		case "-serve", "--serve":
+			serveMode = true
+		case "-port", "--port":
+			if i+1 < len(args) {
+				fmt.Sscanf(args[i+1], "%d", &port)
+				i++
+			}
 		case "-session", "-s":
 			if i+1 < len(args) {
 				sessionArg = args[i+1]
 				i++
 			}
 		case "-h", "--help":
-			fmt.Println("synergy-harness [-oneshot \"запрос\"] [-no-stream]")
+			fmt.Println("synergy-harness [-oneshot \"запрос\"] [-no-stream] [-serve [-port N]]")
 			return
 		default:
 			if promptArg == "" {
@@ -6485,6 +6493,11 @@ func main() {
 	}
 	attachMCPHTTP(agent)
 	agent.StreamUI = !noStream && isTerminal()
+
+	// --- HTTP-сервер (хаб + API, headless-режим) ---
+	if serveMode {
+		os.Exit(runServer(cfg, llm, workdir, plugins, port))
+	}
 
 	// --- Telegram-бот (демон, крутится 20+ часов с backoff и recover) ---
 	if telegramMode {

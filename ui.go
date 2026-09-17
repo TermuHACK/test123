@@ -143,6 +143,8 @@ type tuiModel struct {
 	llm           *LLMClient
 	plugins       []*Plugin
 	settings      bool
+	hub           bool // экран хаба: агенты, плагины, MCP, cron, провайдеры
+	hubTab        int  // 0=агенты 1=плагины 2=mcp 3=cron 4=провайдеры
 	sidebar       bool
 	picker        bool
 	pickerMode    string
@@ -636,6 +638,34 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+	}
+
+	if m.hub {
+		switch key {
+		case "esc", "h", "H":
+			m.hub = false
+			return m, nil
+		case "left":
+			if m.hubTab > 0 {
+				m.hubTab--
+			}
+			return m, nil
+		case "right":
+			if m.hubTab < 4 {
+				m.hubTab++
+			}
+			return m, nil
+		case "1", "2", "3", "4", "5":
+			m.hubTab = int(key[0] - '1')
+			return m, nil
+		case "r", "R":
+			if m.hubTab == 4 {
+				InvalidateModelsCache()
+				return m, m.fetchCmd()
+			}
+			return m, nil
+		}
+		return m, nil
 	}
 
 	if m.picker {
@@ -1178,6 +1208,12 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonWheelDown {
 		m.vp.ScrollDown(3)
+		return m, nil
+	}
+	if m.bz.hit("btn_hub", msg) {
+		m.hub = !m.hub
+		m.settings = false
+		m.picker = false
 		return m, nil
 	}
 	if m.bz.hit("btn_side", msg) {

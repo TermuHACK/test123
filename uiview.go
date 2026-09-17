@@ -139,7 +139,8 @@ func (m tuiModel) renderTop() string {
 	cfgBtn := tile("⚙", m.settings)
 	quitBtn := tile("✕", false)
 
-	left := lipgloss.JoinHorizontal(lipgloss.Top, side, " ", brand, " ", newBtn)
+	hubBtn := tile("⌘", m.hub)
+	left := lipgloss.JoinHorizontal(lipgloss.Top, side, " ", brand, " ", newBtn, " ", hubBtn)
 	right := lipgloss.JoinHorizontal(lipgloss.Top, modelsBtn, " ", cfgBtn, " ", quitBtn)
 
 	// join вместо пробельной арифметики: кнопки не съезжают ни при какой ширине
@@ -149,18 +150,23 @@ func (m tuiModel) renderTop() string {
 	}
 	row := lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), right)
 
-	// зоны мыши — y=1, потому что строка 0 — отступ от верхнего края
+	// зоны мыши — плитки высотой 2 строки (контент y=1 + нижняя рамка y=2),
+	// строка 0 — отступ от верхнего края. Раньше зона была только y=1 →
+	// нижняя половина кнопки кликалась «вникуда».
 	z := m.bz
 	x := 0
-	z.set("btn_side", x, 1, x+lipgloss.Width(side)-1, 1)
+	z.set("btn_side", x, 1, x+lipgloss.Width(side)-1, 2)
 	x += lipgloss.Width(side) + 1 + lipgloss.Width(brand) + 1
-	z.set("btn_new", x, 1, x+lipgloss.Width(newBtn)-1, 1)
+	z.set("btn_new", x, 1, x+lipgloss.Width(newBtn)-1, 2)
 	rx := m.width - lipgloss.Width(right)
-	z.set("btn_models", rx, 1, rx+lipgloss.Width(modelsBtn)-1, 1)
+	z.set("btn_models", rx, 1, rx+lipgloss.Width(modelsBtn)-1, 2)
 	x2 := rx + lipgloss.Width(modelsBtn) + 1
-	z.set("btn_cfg", x2, 1, x2+lipgloss.Width(cfgBtn)-1, 1)
+	z.set("btn_cfg", x2, 1, x2+lipgloss.Width(cfgBtn)-1, 2)
 	x2 += lipgloss.Width(cfgBtn) + 1
-	z.set("btn_quit", x2, 1, x2+lipgloss.Width(quitBtn)-1, 1)
+	z.set("btn_quit", x2, 1, x2+lipgloss.Width(quitBtn)-1, 2)
+	// кнопка хаба — в левой группе после ＋
+	x += lipgloss.Width(newBtn) + 1
+	z.set("btn_hub", x, 1, x+lipgloss.Width(hubBtn)-1, 2)
 
 	// отступ от верхнего края: пустая строка, потом кнопки, потом разделитель
 	return "\n" + row + "\n" + lipgloss.NewStyle().Foreground(clBorder).Render(strings.Repeat("─", m.width))
@@ -168,6 +174,9 @@ func (m tuiModel) renderTop() string {
 
 // ---------- тело ----------
 func (m tuiModel) renderBody() string {
+	if m.hub {
+		return m.renderHub()
+	}
 	if m.settings {
 		return m.renderSettings()
 	}
@@ -644,6 +653,128 @@ func (m tuiModel) renderPicker() string {
 		Height(availH).
 		Align(lipgloss.Center, lipgloss.Center).
 		Render(box)
+}
+
+// ---------- хаб: агенты/субагенты, плагины, MCP, cron, провайдеры ----------
+func (m tuiModel) renderHub() string {
+	tabs := []string{"агенты", "плагины", "mcp", "cron", "провайдеры"}
+	var tabParts []string
+	for i, t := range tabs {
+		if i == m.hubTab {
+			tabParts = append(tabParts, lipgloss.NewStyle().Bold(true).Foreground(clBG).Background(clAccent).Padding(0, 1).Render(t))
+		} else {
+			tabParts = append(tabParts, lipgloss.NewStyle().Foreground(clMuted).Padding(0, 1).Render(t))
+		}
+	}
+	lines := []string{
+		lipgloss.NewStyle().Bold(true).Foreground(clAccent).Render("⌘ хаб"),
+		"",
+		strings.Join(tabParts, " "),
+		"",
+	}
+
+	switch m.hubTab {
+	case 0: // агенты/субагенты = живые чаты + состояние
+		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(clBlue).Render("  чаты / субагенты:"))
+		for i, s := range m.sessions {
+			mark := "○"
+			if s.running {
+				mark = "◐"
+			}
+			if i == m.cur {
+				mark = "●"
+			}
+			name := s.name
+			if s.title != "" {
+				name = s.title
+			}
+			st := "готов"
+			if s.running {
+				st = "в процессе…"
+			}
+			pin := ""
+			if s.pinned {
+				pin = " ◆"
+			}
+			lines = append(lines, fmt.Sprintf("  %s %s — %s%s", mark, trunc(name, 40), st, pin))
+		}
+		if ts := ListTasks(); len(ts) > 0 {
+			lines = append(lines, "", lipgloss.NewStyle().Bold(true).Foreground(clBlue).Render("  таски сессии:"))
+			for _, t := range ts {
+				icon := "▸"
+				if t.Status == "done" {
+					icon = "✓"
+				}
+				lines = append(lines, fmt.Sprintf("  %s #%d %s (%s)", icon, t.ID, trunc(t.Title, 44), t.Status))
+			}
+		}
+	case 1: // плагины
+		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(clBlue).Render("  плагины:"))
+		if len(m.plugins) == 0 {
+			lines = append(lines, lipgloss.NewStyle().Foreground(clMuted).Render("  нет подключённых плагинов"))
+		}
+		for _, p := range m.plugins {
+			lines = append(lines, fmt.Sprintf("  ⚙ %s v%s — тулов: %d", p.Name, p.Version, len(p.Tools)))
+		}
+		lines = append(lines, "", lipgloss.NewStyle().Foreground(clMuted).Render("  складывай .py в workspace/plugins/ и /plugins-reload"))
+	case 2: // MCP
+		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(clBlue).Render("  MCP-серверы:"))
+		if len(globalMCPServers) == 0 {
+			lines = append(lines, lipgloss.NewStyle().Foreground(clMuted).Render("  нет подключённых MCP-серверов"))
+		}
+		for _, c := range globalMCPServers {
+			c.mu.Lock()
+			n := len(c.tools)
+			c.mu.Unlock()
+			lines = append(lines, fmt.Sprintf("  ◈ %s — тулов: %d", c.name, n))
+		}
+		lines = append(lines, "", lipgloss.NewStyle().Foreground(clMuted).Render("  конфиг: mcp.json в рабочей директории"))
+	case 3: // cron
+		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(clBlue).Render("  cron / триггеры:"))
+		cs := ListCron()
+		if len(cs) == 0 {
+			lines = append(lines, lipgloss.NewStyle().Foreground(clMuted).Render("  пусто — добавь через /cron"))
+		}
+		for _, c := range cs {
+			state := "разово"
+			if c.Every > 0 {
+				state = fmt.Sprintf("каждые %d мин", c.Every)
+			}
+			on := "on"
+			if !c.Enabled {
+				on = "off"
+			}
+			lines = append(lines, fmt.Sprintf("  ⏰ %s — %s, %s, %s", c.ID, trunc(c.Text, 36), state, on))
+		}
+	case 4: // провайдеры + модели
+		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(clBlue).Render("  провайдеры:"))
+		for _, p := range AllProviders() {
+			mark := "  "
+			if p.Name == m.provider {
+				mark = lipgloss.NewStyle().Foreground(clAccent).Render("▸ ")
+			}
+			free := ""
+			if p.Free {
+				free = " (no-key)"
+			}
+			lines = append(lines, fmt.Sprintf("  %s%s%s", mark, p.Name, free))
+		}
+		lines = append(lines, "", lipgloss.NewStyle().Foreground(clMuted).Render("  R — обновить список моделей (динамический фетч /models)"))
+		lines = append(lines, lipgloss.NewStyle().Foreground(clMuted).Render(fmt.Sprintf("  моделей загружено: %d, текущая: %s", len(m.models), m.model)))
+	}
+
+	lines = append(lines, "", lipgloss.NewStyle().Foreground(clMuted).Render("  ←/→ или 1-5 — вкладки • Esc/H — закрыть"))
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(clCyan).
+		Padding(1, 3).
+		Render(strings.Join(lines, "\n"))
+	availH := m.height - topBarRows - 1
+	if strings.Count(box, "\n")+1 >= availH {
+		return lipgloss.NewStyle().Width(m.width-2).Align(lipgloss.Center, lipgloss.Top).Render(box)
+	}
+	return lipgloss.NewStyle().Width(m.width-2).Height(availH).Align(lipgloss.Center, lipgloss.Center).Render(box)
 }
 
 // ---------- настройки ----------
