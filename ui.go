@@ -93,6 +93,42 @@ type modelsFetchedMsg struct {
 	err   error
 }
 
+// ---------- команды как плагины ----------
+// slashCommandPlugin — любой модуль (в т.ч. плагины) может зарегистрировать свою /команду.
+// Реестр имеет приоритет над встроенным switch в dispatchCommand.
+type slashCommandPlugin struct {
+	Desc string
+	Run  func(m *tuiModel, fields []string) tea.Cmd
+}
+
+var slashRegistry = map[string]slashCommandPlugin{}
+
+// RegisterSlashCommand — регистрация команды-плагина (name с ведущим /).
+func RegisterSlashCommand(name, desc string, fn func(m *tuiModel, fields []string) tea.Cmd) {
+	slashRegistry[name] = slashCommandPlugin{Desc: desc, Run: fn}
+	found := false
+	for _, c := range slashCommands {
+		if c == name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		slashCommands = append(slashCommands, name)
+	}
+}
+
+func init() {
+	// встроенные команды, вынесенные в реестр (образец архитектуры «команды = плагины»)
+	RegisterSlashCommand("/hub", "хаб: агенты, плагины, MCP, cron, провайдеры",
+		func(m *tuiModel, fields []string) tea.Cmd {
+			m.hub = true
+			m.settings = false
+			m.picker = false
+			return nil
+		})
+}
+
 type tickMsg time.Time
 
 type sidebarAnimMsg time.Time
@@ -552,6 +588,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // friendlyAPIError — понятные подсказки вместо сырых ответов API.
 func friendlyAPIError(e string) string {
 	switch {
+	case strings.Contains(e, "FreeTierError"):
+		return "бесплатный тир закрыт для внешних клиентов — задай API-ключ (K в настройках) или смени провайдера (/providers)"
 	case strings.Contains(e, "MissingSessionID") || strings.Contains(e, "can only be used in OpenCode"):
 		return T("err.zenfree")
 	case strings.Contains(e, "API 401") || strings.Contains(e, "API 403"):
@@ -1403,6 +1441,10 @@ func (m *tuiModel) dispatchCommand(line string) tea.Cmd {
 		}
 		return nil
 	}
+	// команды-плагины имеют приоритет над встроенным switch
+	if sc, ok := slashRegistry[fields[0]]; ok {
+		return sc.Run(m, fields)
+	}
 	switch cmd {
 	case "/history":
 		names := listSavedSessions()
@@ -1462,6 +1504,10 @@ func (m *tuiModel) dispatchCommand(line string) tea.Cmd {
 	case "/detach":
 		m.sessions[m.cur].agent.pendingImages = nil
 		m.addToast("ok", "прикрепления сняты")
+	case "/hub":
+		m.hub = true
+		m.settings = false
+		m.picker = false
 	case "/help", "/?":
 		m.openPicker("help", "Команды Synergy Harness", helpCommands)
 	case "/models":

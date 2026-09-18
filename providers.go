@@ -308,6 +308,9 @@ func probeModel(p *ProviderDef, cfg Config, modelID string) ModelInfo {
 	if strings.Contains(errMsg, "unavailable") {
 		errMsg = "model unavailable"
 	}
+	if strings.Contains(errMsg, "FreeTierError") {
+		errMsg = "free-tier закрыт (нужен ключ)"
+	}
 	return ModelInfo{ID: modelID, Err: fmt.Sprintf("HTTP %d", resp.StatusCode) + " " + errMsg}
 }
 

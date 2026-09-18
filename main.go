@@ -3304,6 +3304,14 @@ func (c *LLMClient) Complete(ctx context.Context, req ChatRequest) (*ChatRespons
 		if !isRetryableStatus(status) {
 			return nil, fmt.Errorf("API %d: %s", status, clampStr(string(data), 800))
 		}
+		if status == 403 && strings.Contains(string(data), "FreeTierError") {
+			// Zen закрыл free-tier сторонним клиентам: пробуем другую живую free-модель
+			if c.rotateFreeModel() {
+				c.notifyRetry("403 free-tier: пробую другую free-модель → " + c.Model)
+				continue
+			}
+			return nil, fmt.Errorf("FreeTierError: бесплатный тир Zen закрыт для сторонних клиентов — задай свой API-ключ (настройки → K) или переключись на другого провайдера (/providers)")
+		}
 		if status == 429 {
 			c.rotateFreeModel() // 429: другая free-модель может быть не в лимите
 		}
@@ -5421,7 +5429,7 @@ var slashCommands = []string{
 	"/compact", "/plugins", "/plugins-reload", "/sandbox", "/workspace", "/reset",
 	"/memory", "/stats", "/telegram", "/quit",
 	"/chat", "/new", "/history", "/lang", "/steer", "/queue", "/settings",
-	"/attach", "/detach", "/tasks",
+	"/attach", "/detach", "/tasks", "/hub",
 }
 
 // applyCompletion вставляет общий префикс/кандидата в буфер.

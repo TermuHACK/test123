@@ -74,8 +74,8 @@ const topBarRows = 4
 // ---------- корневой View ----------
 func (m tuiModel) View() string {
 	m.bz.reset()
-	if m.width < 60 {
-		return m.miniView()
+	if m.width < 60 || m.height < 12 {
+		return m.miniView() // минимальный режим: узкие ИЛИ низкие терминалы
 	}
 	out := lipgloss.JoinVertical(lipgloss.Top, m.renderTop(), m.renderBody())
 	if toasts := m.renderToasts(); toasts != "" {
