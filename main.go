@@ -6422,7 +6422,7 @@ func LookPathSafe(name string) (string, error) {
 }
 
 func main() {
-	var oneshot, noStream, telegramMode, netTestMode, serveMode bool
+	var oneshot, noStream, telegramMode, netTestMode, serveMode, loginMode bool
 	var promptArg, sessionArg string
 	port := 8787
 	args := os.Args[1:]
@@ -6444,6 +6444,8 @@ func main() {
 			telegramMode = true
 		case "-serve", "--serve":
 			serveMode = true
+		case "-login", "--login", "login":
+			loginMode = true
 		case "-port", "--port":
 			if i+1 < len(args) {
 				fmt.Sscanf(args[i+1], "%d", &port)
@@ -6515,6 +6517,13 @@ func main() {
 	agent.StreamUI = !noStream && isTerminal()
 
 	// --- HTTP-сервер (хаб + API, headless-режим) ---
+	if loginMode {
+		if err := CodexDeviceLogin(context.Background(), os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "login:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if serveMode {
 		os.Exit(runServer(cfg, llm, workdir, plugins, port))
 	}
