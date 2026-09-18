@@ -162,41 +162,11 @@ func FetchModels(p *ProviderDef, cfg Config, probe bool) ([]ModelInfo, error) {
 			out = append(out, ModelInfo{ID: id, Alive: true})
 		}
 	} else {
-		// Zen no-key: пробуем только free-модели + big-pickle (реально работают без ключа);
-		// платные остаются в списке как Alive (вдруг пользователь введёт ключ позже).
-		isFree := func(id string) bool {
-			low := strings.ToLower(id)
-			return strings.Contains(low, "free") || low == "big-pickle"
+		// Zen no-key: список уже отфильтрован в fetchModelIDs (только *:free + big-pickle),
+		// платные модели сюда не попадают, поэтому нечего пробить — всё живое.
+		for _, id := range ids {
+			out = append(out, ModelInfo{ID: id, Alive: true})
 		}
-		// Пробинг бесплатных моделей параллельно: tiny-запрос max_tokens=1, таймаут 20с.
-		var wg sync.WaitGroup
-		res := make([]ModelInfo, len(ids))
-		sem := make(chan struct{}, 6)
-		for i, id := range ids {
-			if !isFree(id) {
-				res[i] = ModelInfo{ID: id, Alive: true}
-				continue
-			}
-			wg.Add(1)
-			go func(i int, id string) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				res[i] = probeModel(p, cfg, id)
-			}(i, id)
-		}
-		wg.Wait()
-		// порядок сохраняем как в /models (free сверху), лишь dead free уходят вниз
-		for _, mi := range res {
-			out = append(out, mi)
-		}
-		sort.SliceStable(out, func(i, j int) bool {
-			fi, fj := isFree(out[i].ID), isFree(out[j].ID)
-			if fi && fj && out[i].Alive != out[j].Alive {
-				return out[i].Alive // живые free выше мёртвых free
-			}
-			return false
-		})
 	}
 	modelsCacheMu.Lock()
 	modelsCache[key] = out
@@ -254,27 +224,33 @@ func fetchModelIDs(p *ProviderDef, cfg Config) ([]string, error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("провайдер %s вернул пустой список", p.Name)
 	}
-	sort.Strings(ids)
-	if strings.Contains(base, "opencode.ai") {
-		// Zen no-key: сортировка — сначала все free + big-pickle (они реально работают без ключа),
-		// потом остальные. Пользователь может добавить свою модель через /model <id>.
-		isFree := func(id string) bool {
+	if strings.Contains(base, "opencode.ai") && p.Free {
+		// Zen no-key: оставляем только то, что реально работает без ключа.
+		//   1) всё, где в id есть подстрока ":free" или "-free" (регистр игнорируем),
+		//   2) плюс "big-pickle" принудительно (он бесплатный, но без суффикса),
+		//   3) сортируем: big-pickle первым, остальные free по алфавиту.
+		var free []string
+		hasPickle := false
+		for _, id := range ids {
 			low := strings.ToLower(id)
-			return strings.Contains(low, "free") || low == "big-pickle"
+			if low == "big-pickle" {
+				hasPickle = true
+				continue
+			}
+			if strings.Contains(low, "free") {
+				free = append(free, id)
+			}
 		}
-		sort.SliceStable(ids, func(i, j int) bool {
-			fi, fj := isFree(ids[i]), isFree(ids[j])
-			if fi != fj {
-				return fi
-			}
-			if ids[i] == "big-pickle" {
-				return true
-			}
-			if ids[j] == "big-pickle" {
-				return false
-			}
-			return ids[i] < ids[j]
-		})
+		sort.Strings(free)
+		ids = free
+		if hasPickle {
+			ids = append([]string{"big-pickle"}, ids...)
+		}
+		if len(ids) == 0 {
+			return nil, fmt.Errorf("Zen больше не отдаёт бесплатных моделей без ключа (big-pickle и *:free отсутствуют в /models)")
+		}
+	} else {
+		sort.Strings(ids)
 	}
 	return ids, nil
 }
@@ -363,8 +339,12 @@ func isRetryableStatus(code int) bool {
 	return false
 }
 
-// applyZenHeaders — служебные заголовки клиента opencode для Zen (без них — MissingSessionID).
-// sessionID пустой → сгенерируется новый.
+// applyZenHeaders — служебные заголовки клиента opencode для Zen (1:1 с opencode request.ts).
+// sessionID — ид сессии (x-opencode-session); userID — стабильный id пользователя
+// (x-opencode-request = user.id у opencode, НЕ session — иначе их rate limiter считает
+// каждый запрос новым анонимом).
+var zenAnonUser = newUUID()
+
 func applyZenHeaders(req *http.Request, sessionID string) {
 	if !strings.Contains(req.URL.Host, "opencode.ai") {
 		return
@@ -374,7 +354,7 @@ func applyZenHeaders(req *http.Request, sessionID string) {
 	}
 	req.Header.Set("x-opencode-session", sessionID)
 	req.Header.Set("x-opencode-client", "cli")
-	req.Header.Set("x-opencode-request", sessionID)
+	req.Header.Set("x-opencode-request", zenAnonUser)
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", "opencode/1.0")
 	}

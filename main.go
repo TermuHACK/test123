@@ -3207,6 +3207,8 @@ type LLMClient struct {
 	APIKey  string
 	Model   string
 	HTTP    *http.Client
+	// UserID — стабильный id пользователя для x-opencode-request (как user.id в opencode).
+	UserID string
 	// SessionID — идентификатор сессии; для OpenCode Zen шлём его заголовком
 	// x-opencode-session (так делает их клиент — без него Zen Free отвечает MissingSessionID).
 	SessionID string
@@ -3217,19 +3219,29 @@ type LLMClient struct {
 // applyProviderHeaders — заголовки под конкретный провайдерский бэкенд.
 func (c *LLMClient) applyProviderHeaders(r *http.Request) {
 	r.Header.Set("Content-Type", "application/json")
-	if c.APIKey != "" {
-		r.Header.Set("Authorization", "Bearer "+c.APIKey)
-	}
 	if strings.Contains(c.BaseURL, "opencode.ai") {
-		// Zen: бесплатный тир пускает только со служебными заголовками клиента opencode.
+		// Zen: повторяем клиент opencode 1:1 — без ключа шлют "public" (handler.go:
+		// apiKey=="public" → anonymous free tier), x-opencode-request = стабильный user.id
+		// (не session!), сессия — отдельным заголовком.
+		key := c.APIKey
+		if key == "" {
+			key = "public"
+		}
+		r.Header.Set("Authorization", "Bearer "+key)
 		if c.SessionID == "" {
 			c.SessionID = newUUID()
 		}
+		if c.UserID == "" {
+			c.UserID = newUUID()
+		}
 		r.Header.Set("x-opencode-session", c.SessionID)
 		r.Header.Set("x-opencode-client", "cli")
-		r.Header.Set("x-opencode-request", c.SessionID)
+		r.Header.Set("x-opencode-request", c.UserID)
 		r.Header.Set("User-Agent", "opencode/1.0")
 		return
+	}
+	if c.APIKey != "" {
+		r.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
 	r.Header.Set("User-Agent", "synergy-agent/2.0")
 }
