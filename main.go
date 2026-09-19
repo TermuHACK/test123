@@ -6422,8 +6422,9 @@ func LookPathSafe(name string) (string, error) {
 }
 
 func main() {
-	var oneshot, noStream, telegramMode, netTestMode, serveMode, loginMode bool
+	var oneshot, noStream, telegramMode, netTestMode, serveMode, loginMode, swarmMode, soloMode bool
 	var promptArg, sessionArg string
+	var positional []string
 	port := 8787
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
@@ -6446,6 +6447,10 @@ func main() {
 			serveMode = true
 		case "-login", "--login", "login":
 			loginMode = true
+		case "-swarm", "--swarm":
+			swarmMode = true
+		case "-solo", "--solo":
+			soloMode = true
 		case "-port", "--port":
 			if i+1 < len(args) {
 				fmt.Sscanf(args[i+1], "%d", &port)
@@ -6460,6 +6465,9 @@ func main() {
 			fmt.Println("synergy-harness [-oneshot \"запрос\"] [-no-stream] [-serve [-port N]]")
 			return
 		default:
+			if !strings.HasPrefix(args[i], "-") {
+				positional = append(positional, args[i])
+			}
 			if promptArg == "" {
 				promptArg = args[i]
 			}
@@ -6517,6 +6525,28 @@ func main() {
 	agent.StreamUI = !noStream && isTerminal()
 
 	// --- HTTP-сервер (хаб + API, headless-режим) ---
+	if swarmMode || soloMode {
+		rest := positional
+		if len(rest) == 0 {
+			fmt.Fprintln(os.Stderr, "использование: synergy-harness -swarm|-solo <задача>")
+			os.Exit(2)
+		}
+		sw := NewSwarm(llm)
+		sw.Verbose = func(s string) { fmt.Fprintln(os.Stderr, col(cCyan, s)) }
+		var out string
+		var err error
+		if soloMode {
+			out, err = sw.RunSolo(context.Background(), strings.Join(rest, " "))
+		} else {
+			out, err = sw.RunSwarm(context.Background(), strings.Join(rest, " "))
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "swarm:", err)
+			os.Exit(1)
+		}
+		fmt.Println(out)
+		os.Exit(0)
+	}
 	if loginMode {
 		if err := CodexDeviceLogin(context.Background(), os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "login:", err)
