@@ -6422,7 +6422,7 @@ func LookPathSafe(name string) (string, error) {
 }
 
 func main() {
-	var oneshot, noStream, telegramMode, netTestMode, serveMode, loginMode, swarmMode, soloMode bool
+	var oneshot, noStream, telegramMode, netTestMode, loginMode, swarmMode, soloMode bool
 	var promptArg, sessionArg string
 	var positional []string
 	port := 8787
@@ -6444,7 +6444,7 @@ func main() {
 		case "-telegram", "-tg":
 			telegramMode = true
 		case "-serve", "--serve":
-			serveMode = true
+			fmt.Fprintln(os.Stderr, "-serve выпилен: используй CLI")
 		case "-login", "--login", "login":
 			loginMode = true
 		case "-swarm", "--swarm":
@@ -6488,7 +6488,12 @@ func main() {
 	llm := NewLLMClient()
 	currentLLM = llm // субагенты (delegate/delegate_parallel) наследуют его
 	if netTestMode {
-		runNetTest()
+		if resp, err := sharedHTTPClient.Get("https://opencode.ai/zen/v1/models"); err != nil {
+			fmt.Println("net test FAIL:", err)
+		} else {
+			fmt.Println("net test: HTTP", resp.StatusCode)
+			resp.Body.Close()
+		}
 	}
 	llm.APIKey = cfg.APIKey
 	if cfg.BaseURL != "" {
@@ -6554,9 +6559,6 @@ func main() {
 		}
 		os.Exit(0)
 	}
-	if serveMode {
-		os.Exit(runServer(cfg, llm, workdir, plugins, port))
-	}
 
 	// --- Telegram-бот (демон, крутится 20+ часов с backoff и recover) ---
 	if telegramMode {
@@ -6619,14 +6621,12 @@ func main() {
 		return
 	}
 
-	// --- TUI-режим (Bubble Tea: центр-ввод, панель сессий, мышь, уведомления) ---
-	if !isTerminal() {
-		fmt.Fprintln(os.Stderr, col(cYellow, "stdout — не терминал; используйте -oneshot \"запрос\""))
-		os.Exit(1)
-	}
+	// --- CLI-режим (bubbletea выпилен) ---
 	silentSessionLoad = true
-	code := runBubbleTUI(cfg, llm, workdir, plugins)
-	os.Exit(code)
+	agent := NewAgent(llm, workdir, plugins...)
+	attachMCP(agent)
+	loadSession(agent)
+	runCLI(cfg, llm, agent)
 }
 
 func italic(s string) string { return "\033[3m" + s + "\033[23m" }
