@@ -82,6 +82,37 @@ func cliReadLine(prompt string, history *[]string) (string, bool) {
 			if seq[0] != '[' {
 				continue
 			}
+			// bracketed paste: ESC [ 2 0 0 ~ ... ESC [ 2 0 1 ~
+			if seq[1] == '2' {
+				tail := make([]byte, 3)
+				if _, err := io.ReadFull(os.Stdin, tail); err == nil && string(tail) == "00~" {
+					var paste []byte
+					end := []byte{0x1b, '[', '2', '0', '1', '~'}
+					one := make([]byte, 1)
+					for {
+						if _, err := os.Stdin.Read(one); err != nil {
+							break
+						}
+						paste = append(paste, one[0])
+						if len(paste) >= 6 && string(paste[len(paste)-6:]) == string(end) {
+							paste = paste[:len(paste)-6]
+							break
+						}
+						if len(paste) > 1<<20 {
+							break
+						}
+					}
+					rs := []rune(string(paste))
+					nb := make([]rune, 0, len(buf)+len(rs))
+					nb = append(nb, buf[:pos]...)
+					nb = append(nb, rs...)
+					nb = append(nb, buf[pos:]...)
+					buf = nb
+					pos += len(rs)
+					redraw()
+					continue
+				}
+			}
 			switch seq[1] {
 			case 'A': // ↑ история назад
 				if hidx > 0 {
