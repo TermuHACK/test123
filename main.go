@@ -6623,10 +6623,10 @@ func main() {
 
 	// --- CLI-режим (bubbletea выпилен) ---
 	silentSessionLoad = true
-	agent := NewAgent(llm, workdir, plugins...)
-	attachMCP(agent)
-	loadSession(agent)
-	runCLI(cfg, llm, agent)
+	cliAgent := NewAgent(llm, workdir, plugins...)
+	attachMCP(cliAgent)
+	loadSession(cliAgent)
+	runCLI(cfg, llm, cliAgent)
 }
 
 func italic(s string) string { return "\033[3m" + s + "\033[23m" }

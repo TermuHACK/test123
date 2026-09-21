@@ -264,5 +264,3 @@ func cliCommand(line string, llm *LLMClient, agent *Agent) bool {
 // jsonMarshalIndent — helper, раньше жил в ui.go (нужен cron.go).
 func jsonMarshalIndent(v any) ([]byte, error) { return json.MarshalIndent(v, "", "  ") }
 
-// notifyApp — уведомление (стаб после выпила ui.go): просто в stderr.
-func notifyApp(msg string) { fmt.Fprintln(os.Stderr, col(cGray, msg)) }
