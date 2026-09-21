@@ -277,6 +277,15 @@ func cliCommand(line string, llm *LLMClient, agent *Agent) bool {
 		cliSave()
 		cliApplyProvider(llm, cliCurrentProvider())
 		fmt.Println("✓ ключ сохранён для", provName)
+		if llm.APIKey != "" {
+			masked := llm.APIKey
+			if len(masked) > 10 {
+				masked = masked[:6] + "…" + masked[len(masked)-4:]
+			}
+			fmt.Println("  активный ключ:", masked)
+		} else {
+			fmt.Println("  ⚠ ключ НЕ применился к провайдеру — проверь имя (/providers)")
+		}
 	case "/hub":
 		cliHub()
 	case "/roles":

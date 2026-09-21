@@ -66,6 +66,19 @@ func providerKey(c Config, name string) string {
 		if pc, ok := c.Providers[name]; ok && pc != nil && pc.APIKey != "" {
 			return pc.APIKey
 		}
+		// нечёткий поиск: ключ, сохранённый как "OpenCode", подхватывается для "OpenCode Zen"
+		// (и наоборот) — имя нормализуем и сравниваем по префиксу без регистра.
+		norm := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+		want := norm(name)
+		for k, pc := range c.Providers {
+			if pc == nil || pc.APIKey == "" {
+				continue
+			}
+			have := norm(k)
+			if have == want || strings.HasPrefix(want, have) || strings.HasPrefix(have, want) {
+				return pc.APIKey
+			}
+		}
 	}
 	if name == "OpenRouter" {
 		if k := getenv("OPENROUTER_API_KEY", ""); k != "" {
