@@ -6167,7 +6167,7 @@ func loadOrSetupConfig() Config {
 
 	// Мастер настройки убран: TUI стартует сразу, ключи вводятся в окне настроек (Ctrl+S).
 	if cfg.APIKey == "" && !isTerminal() {
-		fmt.Fprintln(os.Stderr, col(cYellow, "⚠ OPENAI_API_KEY не задан — можно ввести позже в настройках TUI (Ctrl+S)."))
+		fmt.Fprintln(os.Stderr, col(cYellow, "⚠ OPENAI_API_KEY не задан — можно ввести командой /key <провайдер> <ключ>."))
 	}
 	if cfg.Model == "" {
 		cfg.Model = "gpt-4o-mini"
@@ -6479,7 +6479,7 @@ func main() {
 	}
 	cfg := loadOrSetupConfig()
 	if cfg.APIKey == "" {
-		fmt.Println(col(cYellow, "  ⚠ API-ключ не настроен — LLM-запросы могут отклоняться. /providers для настройки."))
+		fmt.Println(col(cYellow, "  ⚠ API-ключ не настроен — LLM-запросы могут отклоняться. /key или /providers для настройки."))
 	}
 
 	workdir, _ := os.Getwd()
